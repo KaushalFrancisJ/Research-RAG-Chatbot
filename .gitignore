@@ -1,0 +1,5 @@
+dist/*
+.env
+pdfContext/*.pdf
+*.pyc
+*.bin

@@ -15,11 +15,17 @@ def get_error_message(response: requests.Response) -> str:
         return response.text or f"HTTP {response.status_code}"
 
 
-# Generate a session ID once per browser session and persist it across reruns.
-# A page refresh keeps the same st.session_state, so the ID survives reruns
-# but is brand-new for every fresh tab or browser session.
+# ── Session bootstrap ──────────────────────────────────────────────────────────
 if "session_id" not in st.session_state:
     st.session_state.session_id = str(uuid.uuid4())
+if "pdf_uploaded" not in st.session_state:
+    st.session_state.pdf_uploaded = False
+if "upload_msg" not in st.session_state:
+    st.session_state.upload_msg = None      # {"type": "success"|"error", "text": str}
+if "generate_result" not in st.session_state:
+    st.session_state.generate_result = None # {"answer": str, "chunks": list}
+if "eval_results" not in st.session_state:
+    st.session_state.eval_results = None    # list of result dicts
 
 SESSION_HEADERS = {"X-Session-Id": st.session_state.session_id}
 
@@ -43,11 +49,28 @@ if st.button("Upload & Chunk"):
                 if response.ok:
                     data = response.json()
                     st.session_state.pdf_uploaded = True
-                    st.success(f"✅ **{data['filename']}** processed into **{data['chunks']}** chunks.")
+                    st.session_state.upload_msg = {
+                        "type": "success",
+                        "text": f"✅ **{data['filename']}** processed into **{data['chunks']}** chunks.",
+                    }
+                    # Clear stale results from a previous document
+                    st.session_state.generate_result = None
+                    st.session_state.eval_results = None
                 else:
-                    st.error(f"Error: {get_error_message(response)}")
+                    st.session_state.upload_msg = {"type": "error", "text": get_error_message(response)}
             except requests.exceptions.ConnectionError:
-                st.error("Cannot connect to the backend. Make sure the FastAPI server is running on port 8000.")
+                st.session_state.upload_msg = {
+                    "type": "error",
+                    "text": "Cannot connect to the backend. Make sure the FastAPI server is running.",
+                }
+
+# Render persisted upload message
+if st.session_state.upload_msg:
+    msg = st.session_state.upload_msg
+    if msg["type"] == "success":
+        st.success(msg["text"])
+    else:
+        st.error(msg["text"])
 
 st.divider()
 
@@ -59,7 +82,7 @@ k_gen = st.slider("Number of chunks to retrieve", 1, 10, 5, key="k_gen")
 if st.button("Generate Answer"):
     if not query:
         st.warning("Please enter a question.")
-    elif not st.session_state.get("pdf_uploaded"):
+    elif not st.session_state.pdf_uploaded:
         st.warning("Please upload a PDF first.")
     else:
         with st.spinner("Generating..."):
@@ -70,17 +93,21 @@ if st.button("Generate Answer"):
                     headers=SESSION_HEADERS,
                 )
                 if response.ok:
-                    data = response.json()
-                    st.subheader("Answer")
-                    st.write(data["answer"])
-                    with st.expander("Retrieved Chunks"):
-                        for i, chunk in enumerate(data["chunks"], 1):
-                            st.markdown(f"**{i}. {chunk['source']} (Page {chunk['page']})**")
-                            st.caption(chunk["text"][:300] + ("..." if len(chunk["text"]) > 300 else ""))
+                    st.session_state.generate_result = response.json()
                 else:
                     st.error(f"Error: {get_error_message(response)}")
             except requests.exceptions.ConnectionError:
-                st.error("Cannot connect to the backend. Make sure the FastAPI server is running on port 8000.")
+                st.error("Cannot connect to the backend. Make sure the FastAPI server is running.")
+
+# Render persisted generate result
+if st.session_state.generate_result:
+    data = st.session_state.generate_result
+    st.subheader("Answer")
+    st.write(data["answer"])
+    with st.expander("Retrieved Chunks"):
+        for i, chunk in enumerate(data["chunks"], 1):
+            st.markdown(f"**{i}. {chunk['source']} (Page {chunk['page']})**")
+            st.caption(chunk["text"][:300] + ("..." if len(chunk["text"]) > 300 else ""))
 
 st.divider()
 
@@ -89,7 +116,7 @@ st.header("3. Evaluate RAG Quality")
 
 st.markdown(
     "Runs a fixed set of diagnostic questions against the indexed document and scores "
-    "each answer using a Gemini judge on two metrics:"
+    "each answer using a Groq judge on two metrics:"
 )
 st.markdown(
     "| Metric | Scale | Description |\n"
@@ -103,45 +130,44 @@ st.caption(
 )
 
 if st.button("Evaluate"):
-    if not st.session_state.get("pdf_uploaded"):
+    if not st.session_state.pdf_uploaded:
         st.warning("Please upload a PDF first.")
     else:
         with st.spinner("Running evaluation across all questions..."):
             try:
-                response = requests.post(
-                    f"{API_BASE}/evaluate",
-                    headers=SESSION_HEADERS,
-                )
+                response = requests.post(f"{API_BASE}/evaluate", headers=SESSION_HEADERS)
                 if response.ok:
-                    results = response.json()["results"]
-
-                    avg_faith = sum(r["faithfulness"] for r in results) / len(results)
-                    avg_rel = sum(r["answer_relevancy"] for r in results) / len(results)
-                    col1, col2 = st.columns(2)
-                    col1.metric("Avg Faithfulness", f"{avg_faith:.1f} / 5")
-                    col2.metric("Avg Answer Relevancy", f"{avg_rel:.1f} / 5")
-
-                    st.subheader("Results")
-                    for r in results:
-                        faith_bar = "🟩" * r["faithfulness"] + "⬜" * (5 - r["faithfulness"])
-                        rel_bar   = "🟩" * r["answer_relevancy"] + "⬜" * (5 - r["answer_relevancy"])
-                        with st.expander(f"❓ {r['question']}"):
-                            st.markdown(f"**Answer:** {r['answer']}")
-                            st.markdown("---")
-                            st.markdown(f"**Faithfulness:** {faith_bar} {r['faithfulness']}/5")
-                            st.caption(r["faithfulness_reason"])
-                            st.markdown(f"**Answer Relevancy:** {rel_bar} {r['answer_relevancy']}/5")
-                            st.caption(r["answer_relevancy_reason"])
-
-                    st.subheader("Score Summary")
-                    table_data = {
-                        "Question": [r["question"] for r in results],
-                        "Faithfulness": [f"{r['faithfulness']} / 5" for r in results],
-                        "Answer Relevancy": [f"{r['answer_relevancy']} / 5" for r in results],
-                    }
-                    st.table(table_data)
-
+                    st.session_state.eval_results = response.json()["results"]
                 else:
                     st.error(f"Error: {get_error_message(response)}")
             except requests.exceptions.ConnectionError:
-                st.error("Cannot connect to the backend. Make sure the FastAPI server is running on port 8000.")
+                st.error("Cannot connect to the backend. Make sure the FastAPI server is running.")
+
+# Render persisted eval results
+if st.session_state.eval_results:
+    results = st.session_state.eval_results
+
+    avg_faith = sum(r["faithfulness"] for r in results) / len(results)
+    avg_rel   = sum(r["answer_relevancy"] for r in results) / len(results)
+    col1, col2 = st.columns(2)
+    col1.metric("Avg Faithfulness", f"{avg_faith:.1f} / 5")
+    col2.metric("Avg Answer Relevancy", f"{avg_rel:.1f} / 5")
+
+    st.subheader("Results")
+    for r in results:
+        faith_bar = "🟩" * r["faithfulness"] + "⬜" * (5 - r["faithfulness"])
+        rel_bar   = "🟩" * r["answer_relevancy"] + "⬜" * (5 - r["answer_relevancy"])
+        with st.expander(f"❓ {r['question']}"):
+            st.markdown(f"**Answer:** {r['answer']}")
+            st.markdown("---")
+            st.markdown(f"**Faithfulness:** {faith_bar} {r['faithfulness']}/5")
+            st.caption(r["faithfulness_reason"])
+            st.markdown(f"**Answer Relevancy:** {rel_bar} {r['answer_relevancy']}/5")
+            st.caption(r["answer_relevancy_reason"])
+
+    st.subheader("Score Summary")
+    st.table({
+        "Question":         [r["question"] for r in results],
+        "Faithfulness":     [f"{r['faithfulness']} / 5" for r in results],
+        "Answer Relevancy": [f"{r['answer_relevancy']} / 5" for r in results],
+    })

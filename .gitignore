@@ -1,5 +1,6 @@
 dist/*
 .env
+.streamlit/secrets.toml
 pdfContext/*.pdf
 *.pyc
 *.bin

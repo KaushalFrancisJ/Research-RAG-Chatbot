@@ -4,4 +4,8 @@ faiss-cpu
 numpy
 ollama
 python-dotenv
-google-genai
+groq
+fastapi
+uvicorn[standard]
+streamlit
+python-multipart

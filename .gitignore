@@ -4,3 +4,4 @@ dist/*
 pdfContext/*.pdf
 *.pyc
 *.bin
+*.csv

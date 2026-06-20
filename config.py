@@ -14,3 +14,4 @@ GROQ_GENERATION_MODEL = os.getenv('GROQ_GENERATION_MODEL', 'llama-3.3-70b-versat
 OLLAMA_URL = os.getenv('OLLAMA_URL', 'http://localhost:11434')
 EVALUATION_MODEL = os.getenv('EVALUATION_MODEL', 'llama-3.3-70b-versatile')
 GROQ_API_KEY = os.getenv('GROQ_API_KEY')
+ALLOWED_ORIGINS = os.getenv('ALLOWED_ORIGINS', 'http://localhost:8501').split(',')

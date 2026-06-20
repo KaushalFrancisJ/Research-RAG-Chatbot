@@ -1,36 +1,48 @@
+import io
 import os
 from pypdf import PdfReader
 from .text_chunker import chunk_pdf_metadata
 
-def extract_pdf_content(pdf_path, output_dir='dist'):
-    reader = PdfReader(pdf_path)
-    pages = reader.pages
-    
-    os.makedirs(os.path.join(output_dir, 'images'), exist_ok=True)
-    
+
+def extract_pdf_content(source, filename: str = "document.pdf"):
+    """
+    Extract text from a PDF.
+
+    `source` can be:
+      - a file path (str) — used by the CLI / main.py batch processor
+      - a bytes-like object or BytesIO — used by the API upload route (no disk I/O)
+    """
+    if isinstance(source, (bytes, bytearray)):
+        source = io.BytesIO(source)
+
+    reader = PdfReader(source)
+
+    # Resolve a display name for the document
+    title = (reader.metadata.title if reader.metadata else None) or filename
+
     page_content = []
-    for page_num, page in enumerate(pages):
-        images = page.images
-        text_extract = page.extract_text()
+    for page_num, page in enumerate(reader.pages):
+        text_extract = page.extract_text() or ""
+        text_extract = text_extract.replace("-\n", "").replace("\n", " ")
+        text_extract = " ".join(text_extract.split())
 
-        extracted_images = []
-        for i, image_file_object in enumerate(images):
-            file_name = f"out-image-{page_num}-{i}-{image_file_object.name}"
-            file_path = os.path.join(output_dir, 'images', file_name)
-            image_file_object.image.save(file_path)
-            extracted_images.append(file_path)
-        
-        text_extract = text_extract.replace('-\n', '').replace('\n', ' ')
-        text_extract = ' '.join(text_extract.split())
-        
         page_content.append({
-            'page': page_num + 1,
-            'text': text_extract,
-            'images': extracted_images
+            "page": page_num + 1,
+            "text": text_extract,
+            "images": [],          # image extraction skipped — not used by RAG pipeline
         })
-    
-    return page_content, reader.metadata.title or os.path.basename(pdf_path)
 
-def process_pdf(pdf_path, chunk_size=1000, overlap=200, output_dir='dist'):
-    page_content, title = extract_pdf_content(pdf_path, output_dir)
+    return page_content, title
+
+
+def process_pdf(source, chunk_size=1000, overlap=200, filename: str = "document.pdf"):
+    """
+    Process a PDF and return chunks.
+
+    `source` accepts the same types as extract_pdf_content:
+    a file path string, raw bytes, or a BytesIO object.
+    """
+    if isinstance(source, str):
+        filename = os.path.basename(source)
+    page_content, title = extract_pdf_content(source, filename)
     return chunk_pdf_metadata(page_content, title, chunk_size, overlap)
